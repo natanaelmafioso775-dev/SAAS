@@ -15,6 +15,8 @@ const App = {
         this.bindEvents();
         await this.loadSaved();
         this.updateUI();
+        // Inicia na tab de busca por padrão
+        this.switchTab('search');
     },
 
     get totalPages() {
@@ -68,6 +70,11 @@ const App = {
                 this.switchTab(tab.dataset.tab);
             });
         });
+
+        // Fechar modal ao clicar fora
+        document.getElementById('detailModal').addEventListener('click', e => {
+            if (e.target === e.currentTarget) this.closeModal();
+        });
     },
 
     switchTab(tab) {
@@ -75,20 +82,25 @@ const App = {
         const resultsSection = document.getElementById('resultsSection');
         const actionsRow = document.getElementById('actionsRow');
         const savedSection = document.getElementById('savedSection');
+        const panelContent = document.getElementById('panelContent');
+
+        // Esconde tudo primeiro
+        searchCard.style.display = 'none';
+        resultsSection.style.display = 'none';
+        actionsRow.style.display = 'none';
+        savedSection.style.display = 'none';
+        panelContent.style.display = 'none';
 
         if (tab === 'search') {
             searchCard.style.display = 'block';
             resultsSection.style.display = this.results.length ? 'block' : 'none';
             actionsRow.style.display = this.results.length ? 'flex' : 'none';
-            savedSection.style.display = 'none';
         } else if (tab === 'saved') {
-            searchCard.style.display = 'none';
-            resultsSection.style.display = 'none';
-            actionsRow.style.display = 'none';
             savedSection.style.display = 'block';
             this.renderSavedLeads();
         } else if (tab === 'panel') {
-            this.toast('Painel — Em desenvolvimento', 'info');
+            panelContent.style.display = 'block';
+            this.renderDashboardStats();
         }
     },
 
@@ -123,6 +135,7 @@ const App = {
             this.currentPage = 1;
             this.renderTable();
             this.updateUI();
+            this.renderDashboardStats();
 
             // Auto-save to leads
             if (results.length) {
@@ -147,55 +160,305 @@ const App = {
                 this.results = this.savedLeads;
                 this.filteredResults = this.savedLeads;
                 this.renderTable();
+                this.renderDashboardStats();
             }
         } catch (err) {
             console.warn('Erro ao carregar dados:', err);
         }
     },
 
+    getLeadPool() {
+        const map = new Map();
+
+        [...this.savedLeads, ...this.results].forEach(lead => {
+            if (!lead || !lead.id || map.has(lead.id)) return;
+            map.set(lead.id, lead);
+        });
+
+        return map.size ? Array.from(map.values()) : this.savedLeads;
+    },
+
+    renderDashboardStats() {
+        const leads = this.getLeadPool();
+        const total = leads.length;
+        const withSite = leads.filter(lead => lead.hasWebsite).length;
+        const withoutSite = total - withSite;
+        const categories = Array.from(new Set(leads.map(lead => lead.category || 'Sem categoria'))).length;
+
+        document.getElementById('statTotal').textContent = total;
+        document.getElementById('statWithSite').textContent = withSite;
+        document.getElementById('statWithoutSite').textContent = withoutSite;
+        document.getElementById('statCategories').textContent = categories;
+
+        const donutPanel = document.getElementById('donutPanel');
+        const categoryPanel = document.getElementById('categoryPanel');
+
+        if (!total) {
+            donutPanel.innerHTML = `
+                <div class="analytics-empty">
+                    <div>
+                        <i class="fa-solid fa-chart-pie"></i>
+                        <div>Os indicadores aparecem após buscar ou carregar leads.</div>
+                    </div>
+                </div>
+            `;
+            categoryPanel.innerHTML = `
+                <div class="analytics-empty">
+                    <div>
+                        <i class="fa-solid fa-chart-column"></i>
+                        <div>As categorias serão agrupadas aqui.</div>
+                    </div>
+                </div>
+            `;
+            return;
+        }
+
+        // Donut Chart - Presença Digital
+        const sitePct = Math.round((withSite / total) * 100);
+        const noSitePct = 100 - sitePct;
+
+        donutPanel.innerHTML = `
+            <div class="donut" style="--site-pct:${sitePct}%">
+                <div class="donut-center">
+                    <div>
+                        <strong>${total}</strong>
+                        <span>leads</span>
+                    </div>
+                </div>
+            </div>
+            <div class="donut-legend">
+                <div class="legend-item"><span class="legend-dot" style="--legend-color:var(--success)"></span> Com site (${withSite}) <span class="legend-pct">${sitePct}%</span></div>
+                <div class="legend-item"><span class="legend-dot" style="--legend-color:var(--accent)"></span> Sem site (${withoutSite}) <span class="legend-pct">${noSitePct}%</span></div>
+            </div>
+            <div class="donut-summary">
+                <div class="donut-opportunity">
+                    <i class="fa-solid fa-bullhorn"></i>
+                    <strong>${withoutSite}</strong> oportunidades disponíveis
+                </div>
+            </div>
+        `;
+
+        // Category Chart - Barras horizontais
+        const categoryCounts = leads.reduce((acc, lead) => {
+            const category = lead.category || 'Sem categoria';
+            acc[category] = (acc[category] || 0) + 1;
+            return acc;
+        }, {});
+
+        const maxCount = Math.max(...Object.values(categoryCounts));
+        const palette = ['#6366f1', '#ec4899', '#f97316', '#22c55e', '#8b5cf6', '#06b6d4', '#f59e0b', '#ef4444'];
+
+        categoryPanel.innerHTML = Object.entries(categoryCounts)
+            .sort((a, b) => b[1] - a[1])
+            .slice(0, 8)
+            .map(([category, count], index) => `
+                <div class="category-row">
+                    <div class="category-label"><span>${this.escape(category)}</span></div>
+                    <div class="category-bar">
+                        <div class="category-fill" style="--bar-pct:${Math.max(8, Math.round((count / maxCount) * 100))}%; --bar-color:${palette[index % palette.length]}"></div>
+                    </div>
+                    <div class="category-value">${count}</div>
+                </div>
+            `).join('');
+    },
+
     // ====== SAVED LEADS ======
+
+    savedFilter: 'all',
+    savedQuery: '',
 
     async renderSavedLeads() {
         this.savedLeads = await SupabaseClient.getEstablishments();
+        this.renderSavedUI();
+    },
+
+    renderSavedUI() {
         const container = document.getElementById('savedLeadsList');
         const empty = document.getElementById('savedEmpty');
+        const filterEmpty = document.getElementById('savedFilterEmpty');
         const count = document.getElementById('savedCount');
 
-        count.textContent = `(${this.savedLeads.length})`;
+        const total = this.savedLeads.length;
+        count.textContent = `(${total})`;
 
-        if (!this.savedLeads.length) {
+        if (!total) {
             container.innerHTML = '';
             empty.style.display = 'block';
+            filterEmpty.style.display = 'none';
+            document.getElementById('savedCounters').innerHTML = '';
+            document.getElementById('statusPills').innerHTML = '';
             return;
         }
 
         empty.style.display = 'none';
+        filterEmpty.style.display = 'none';
 
-        container.innerHTML = this.savedLeads.map(lead => `
-            <div class="saved-lead-card" data-id="${this.escape(lead.id)}">
+        // Renderiza contadores
+        this.renderSavedCounters();
+
+        // Renderiza pills de status
+        this.renderStatusPills();
+
+        // Aplica busca, filtro e ordenação
+        const filtered = this.getFilteredSavedLeads();
+
+        if (!filtered.length) {
+            container.innerHTML = '';
+            filterEmpty.style.display = 'block';
+            return;
+        }
+        filterEmpty.style.display = 'none';
+
+        const sortVal = document.getElementById('savedSort').value;
+        const sorted = this.sortLeads(filtered, sortVal);
+
+        container.innerHTML = sorted.map(lead => this.renderSavedCard(lead)).join('');
+    },
+
+    getFilteredSavedLeads() {
+        let leads = [...this.savedLeads];
+
+        // Filtro por status
+        if (this.savedFilter !== 'all') {
+            leads = leads.filter(l => l.leadStatus === this.savedFilter);
+        }
+
+        // Busca textual
+        if (this.savedQuery) {
+            const q = this.savedQuery.toLowerCase().trim();
+            leads = leads.filter(l =>
+                (l.name || '').toLowerCase().includes(q) ||
+                (l.category || '').toLowerCase().includes(q) ||
+                (l.city || '').toLowerCase().includes(q) ||
+                (l.address || '').toLowerCase().includes(q) ||
+                (l.phone || '').includes(q)
+            );
+        }
+
+        return leads;
+    },
+
+    sortLeads(leads, sortVal) {
+        const sorted = [...leads];
+        switch (sortVal) {
+            case 'recent':
+                sorted.sort((a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0));
+                break;
+            case 'oldest':
+                sorted.sort((a, b) => new Date(a.created_at || 0) - new Date(b.created_at || 0));
+                break;
+            case 'noSite':
+                sorted.sort((a, b) => (a.hasWebsite ? 1 : 0) - (b.hasWebsite ? 1 : 0));
+                break;
+            case 'noMaps':
+                sorted.sort((a, b) => (a.hasMapsLocation ? 1 : 0) - (b.hasMapsLocation ? 1 : 0));
+                break;
+        }
+        return sorted;
+    },
+
+    filterSavedLeads() {
+        this.savedQuery = document.getElementById('savedSearchInput').value;
+        this.renderSavedUI();
+    },
+
+    setSavedFilter(filter) {
+        this.savedFilter = filter;
+        document.querySelectorAll('.saved-filter-btn').forEach(btn => {
+            btn.classList.toggle('active', btn.dataset.filter === filter);
+        });
+        this.renderSavedUI();
+    },
+
+    sortSavedLeads() {
+        this.renderSavedUI();
+    },
+
+    renderSavedCounters() {
+        const counters = document.getElementById('savedCounters');
+        const statuses = ['Novo', 'Contatado', 'Em negociação', 'Cliente', 'Descartado'];
+        const counts = statuses.map(status => ({
+            status,
+            count: this.savedLeads.filter(l => l.leadStatus === status).length
+        }));
+
+        counters.innerHTML = counts.map(({ status, count }) => `
+            <div class="saved-counter ${status === 'Novo' ? 'counter-info' : status === 'Contatado' ? 'counter-warning' : status === 'Em negociação' ? 'counter-orange' : status === 'Cliente' ? 'counter-success' : 'counter-danger'}">
+                <span class="counter-label">${status}</span>
+                <span class="counter-value">${count}</span>
+            </div>
+        `).join('');
+    },
+
+    renderStatusPills() {
+        const pills = document.getElementById('statusPills');
+        const counts = {};
+        this.savedLeads.forEach(l => {
+            const s = l.leadStatus || 'Novo';
+            counts[s] = (counts[s] || 0) + 1;
+        });
+
+        const total = this.savedLeads.length;
+
+        pills.innerHTML = Object.entries(counts)
+            .sort((a, b) => b[1] - a[1])
+            .map(([status, count]) => `
+                <span class="status-pill ${status.toLowerCase().replace(/\s+/g, '-')}">
+                    ${status === 'Novo' ? '<i class="fa-regular fa-star"></i>' :
+                      status === 'Contatado' ? '<i class="fa-regular fa-message"></i>' :
+                      status === 'Em negociação' ? '<i class="fa-regular fa-handshake"></i>' :
+                      status === 'Cliente' ? '<i class="fa-regular fa-circle-check"></i>' :
+                      '<i class="fa-regular fa-circle-xmark"></i>'}
+                    ${status} (${count})
+                </span>
+            `).join('');
+
+        if (total > 5) {
+            pills.innerHTML += `<span class="status-pill total-pill"><i class="fa-regular fa-layer-group"></i> Total: ${total}</span>`;
+        }
+    },
+
+    renderSavedCard(lead) {
+        const id = this.escape(lead.id);
+        const name = this.escape(lead.name);
+        const category = this.escape(lead.category || 'Sem categoria');
+        const address = lead.address ? this.escape(lead.address) : '';
+        const city = lead.city ? this.escape(lead.city) : '';
+        const phone = lead.phone ? this.escape(lead.phone) : '';
+        const hasWebsite = lead.hasWebsite;
+        const hasMaps = lead.hasMapsLocation;
+        const instagram = lead.instagram || '';
+        const whatsapp = lead.whatsapp || '';
+        const status = lead.leadStatus || 'Novo';
+        const statusColor = status === 'Novo' ? 'info' :
+            status === 'Contatado' ? 'warning' :
+            status === 'Em negociação' ? 'orange' :
+            status === 'Cliente' ? 'success' : 'danger';
+
+        return `
+            <div class="saved-lead-card" data-id="${id}">
                 <div class="saved-lead-left">
                     <div class="saved-lead-icon">
                         <i class="fa-solid fa-store"></i>
                     </div>
                     <div class="saved-lead-info">
-                        <div class="saved-lead-name">${this.escape(lead.name)}</div>
-                        <div class="saved-lead-category">${this.escape(lead.category || 'Sem categoria')}</div>
+                        <div class="saved-lead-name">${name}</div>
+                        <div class="saved-lead-category">${category}</div>
 
                         <div class="saved-lead-details">
-                            ${lead.address ? `
+                            ${address ? `
                             <div class="saved-lead-detail">
                                 <i class="fa-solid fa-location-dot"></i>
-                                <span>${this.escape(lead.address)}</span>
-                            </div>` : ''}
-                            ${lead.city ? `
+                                <span>${address}${city ? `, ${city}` : ''}</span>
+                            </div>` : city ? `
                             <div class="saved-lead-detail">
                                 <i class="fa-solid fa-city"></i>
-                                <span>${this.escape(lead.city)}</span>
+                                <span>${city}</span>
                             </div>` : ''}
-                            ${lead.phone ? `
+                            ${phone ? `
                             <div class="saved-lead-detail">
                                 <i class="fa-solid fa-phone"></i>
-                                <a href="tel:${lead.phone}">${this.escape(lead.phone)}</a>
+                                <a href="tel:${phone}">${phone}</a>
                             </div>` : `
                             <div class="saved-lead-detail">
                                 <i class="fa-solid fa-phone-slash"></i>
@@ -204,33 +467,42 @@ const App = {
                         </div>
 
                         <div class="saved-lead-badges">
-                            <span class="saved-lead-badge danger">
-                                <i class="fa-solid fa-globe"></i> Sem site
+                            <span class="saved-lead-badge ${hasWebsite ? 'success' : 'danger'}">
+                                <i class="fa-solid fa-globe"></i> ${hasWebsite ? 'Tem site' : 'Sem site'}
                             </span>
-                            ${lead.hasMapsLocation
-                                ? `<span class="saved-lead-badge success"><i class="fa-solid fa-map-pin"></i> No Maps</span>`
-                                : `<span class="saved-lead-badge danger"><i class="fa-solid fa-map-pin"></i> Sem Maps</span>`}
-                            <span class="saved-lead-badge info">
-                                <i class="fa-solid fa-tag"></i> ${lead.leadStatus || 'Novo'}
+                            <span class="saved-lead-badge ${hasMaps ? 'success' : 'danger'}">
+                                <i class="fa-solid fa-map-pin"></i> ${hasMaps ? 'No Maps' : 'Sem Google Maps'}
+                            </span>
+                            <span class="saved-lead-badge ${statusColor}">
+                                <i class="fa-solid fa-tag"></i> ${status}
                             </span>
                         </div>
                     </div>
                 </div>
 
-                <div class="saved-lead-right">
-                    <select class="saved-lead-status" data-id="${this.escape(lead.id)}" onchange="App.updateLeadStatus('${this.escape(lead.id)}', this.value)">
-                        <option value="Novo" ${(lead.leadStatus || 'Novo') === 'Novo' ? 'selected' : ''}>Novo</option>
-                        <option value="Contatado" ${lead.leadStatus === 'Contatado' ? 'selected' : ''}>Contatado</option>
-                        <option value="Em negociação" ${lead.leadStatus === 'Em negociação' ? 'selected' : ''}>Em negociação</option>
-                        <option value="Cliente" ${lead.leadStatus === 'Cliente' ? 'selected' : ''}>Cliente</option>
-                        <option value="Descartado" ${lead.leadStatus === 'Descartado' ? 'selected' : ''}>Descartado</option>
+                <div class="saved-lead-actions">
+                    <!-- Ações rápidas -->
+                    <div class="saved-quick-actions">
+                        ${phone ? `<a href="tel:${phone}" class="quick-action-btn" title="Ligar"><i class="fa-solid fa-phone"></i></a>` : ''}
+                        ${whatsapp ? `<a href="https://wa.me/${whatsapp.replace(/\D/g, '')}" target="_blank" class="quick-action-btn" title="WhatsApp"><i class="fa-brands fa-whatsapp"></i></a>` : ''}
+                        ${lead.hasMapsLocation ? `<a href="https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(name + ', ' + (address || city || ''))}" target="_blank" class="quick-action-btn" title="Abrir no Maps"><i class="fa-solid fa-location-dot"></i></a>` : ''}
+                        <button class="quick-action-btn" onclick="App.showDetail('${id}')" title="Ver detalhes"><i class="fa-solid fa-eye"></i></button>
+                    </div>
+
+                    <!-- Status dropdown -->
+                    <select class="saved-lead-status" data-id="${id}" onchange="App.updateLeadStatus('${id}', this.value)">
+                        <option value="Novo" ${status === 'Novo' ? 'selected' : ''}>Novo</option>
+                        <option value="Contatado" ${status === 'Contatado' ? 'selected' : ''}>Contatado</option>
+                        <option value="Em negociação" ${status === 'Em negociação' ? 'selected' : ''}>Em negociação</option>
+                        <option value="Cliente" ${status === 'Cliente' ? 'selected' : ''}>Cliente</option>
+                        <option value="Descartado" ${status === 'Descartado' ? 'selected' : ''}>Descartado</option>
                     </select>
-                    <button class="btn-delete-lead" onclick="App.deleteLead('${this.escape(lead.id)}')" title="Excluir lead">
+                    <button class="btn-delete-lead" onclick="App.deleteLead('${id}')" title="Excluir lead">
                         <i class="fa-solid fa-trash"></i>
                     </button>
                 </div>
             </div>
-        `).join('');
+        `;
     },
 
     async updateLeadStatus(id, status) {
@@ -398,6 +670,8 @@ const App = {
         if (savedTab && this.savedLeads.length) {
             savedTab.innerHTML = `<i class="fa-solid fa-bookmark"></i> Salvos (${this.savedLeads.length})`;
         }
+
+        this.renderDashboardStats();
     },
 
     exportCSV() {
